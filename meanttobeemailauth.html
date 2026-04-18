@@ -1,13 +1,16 @@
 <!DOCTYPE html>
-  <html>
-  <body>
-    <h2>Email verified!</h2>
-    <p>You can now open the app and sign in.</p>
-    <script>
-      // Try to open the app (works if on mobile with app installed)
-      const appUrl = window.location.href
-        .replace('https://harryols.github.io/meanttobeemailauth.html', 'com.harryo.meant_to_be://login-callback');
-      window.location.href = appUrl;
-    </script>
-  </body>
-  </html>
+<html>
+<body>
+  <h2>Email verified!</h2>
+  <p>You can now open the app and sign in.</p>
+
+  <script>
+    const appUrl = window.location.href.replace(
+      'https://harryols.github.io/meanttobeemailauth.html',
+      'com.harryo.meant_to_be://login-callback'
+    );
+
+    window.open(appUrl, '_blank');
+  </script>
+</body>
+</html>
