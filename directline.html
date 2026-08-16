@@ -246,8 +246,10 @@
     setTimeout(() => t.classList.remove('show'), 1600);
   }
   const encode = d => btoa(JSON.stringify({ t: d.type, s: d.sdp }));
+  const cleanCode = s => (s || '').replace(/\s+/g, ''); // strip line breaks apps inject
   function decode(str){
-    const o = JSON.parse(atob(str.trim()));
+    const o = JSON.parse(atob(cleanCode(str)));
+    if (!o.t || !o.s) throw new Error('missing fields');
     return { type: o.t, sdp: o.s };
   }
   function waitIce(pc){
@@ -358,14 +360,15 @@
     const raw = $('inviteIn').value.trim();
     if (!raw) return toast('Paste the invite code first');
     let offer;
-    try { offer = decode(raw); } catch { return toast('That code doesn\u2019t look right'); }
+    try { offer = decode(raw); } catch { return toast('That code looks incomplete \u2014 copy the whole thing'); }
+    if (offer.type !== 'offer') return toast('That\u2019s not an invite. Paste the code from whoever started the line.');
     makePeer();
     pc.ondatachannel = e => wireChannel(e.channel);
     try {
       await pc.setRemoteDescription(offer);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-    } catch { return toast('Couldn\u2019t read that invite code'); }
+    } catch (err) { return toast('Couldn\u2019t read that invite: ' + err.message); }
     $('answerWrap').hidden = false;
     $('genAnswerBtn').textContent = 'Regenerate reply';
     $('answerOut').value = 'generating…';
@@ -377,9 +380,11 @@
     const raw = $('answerIn').value.trim();
     if (!raw) return toast('Paste their reply code first');
     let answer;
-    try { answer = decode(raw); } catch { return toast('That reply code doesn\u2019t look right'); }
+    try { answer = decode(raw); } catch { return toast('That reply looks incomplete \u2014 copy the whole thing'); }
+    if (answer.type !== 'answer') return toast('That\u2019s an invite code, not a reply. You need the code they generated after joining.');
+    if (!pc || pc.signalingState !== 'have-local-offer') return toast('This line already moved on \u2014 hit Cancel and start a fresh one.');
     try { await pc.setRemoteDescription(answer); setStatus('connecting…', 'pending'); }
-    catch { toast('Couldn\u2019t complete the connection'); }
+    catch (err) { toast('Couldn\u2019t complete: ' + err.message); }
   };
 
   function reset(){
