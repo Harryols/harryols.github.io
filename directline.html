@@ -47,7 +47,7 @@
   .hbtn:hover{border-color:var(--azure)}
   .hbtn.leave{color:var(--muted);font-weight:500}
   .hbtn.leave:hover{border-color:var(--danger);color:var(--danger)}
-  #inviteBtn{margin-left:auto}
+  #netBtn{margin-left:auto}
   .status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);font-family:var(--mono);margin-left:6px}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);position:relative;flex:none}
   .dot.live{background:var(--live)}
@@ -197,6 +197,7 @@
   <div class="top">
     <div class="mark"><i></i></div>
     <div class="brand"><b>Direct Line</b><small>peer-to-peer · no server · encrypted</small></div>
+    <button class="hbtn" id="netBtn" title="Connection settings">Connection</button>
     <button class="hbtn" id="inviteBtn" hidden>+ Invite</button>
     <button class="hbtn leave" id="leaveBtn" hidden>Leave</button>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">offline</span></div>
@@ -224,6 +225,7 @@
         <button class="ghost" id="joinBtn">Join room</button>
       </div>
       <p class="hint" style="text-align:center">To join, you'll swap one code with someone already inside — they connect you to the rest of the room automatically. Everyone needs to be online at the same time.</p>
+      <button class="link" id="netBtnIdle" style="align-self:center">Connection settings (peer-to-peer options)</button>
     </div>
   </div>
 
@@ -281,6 +283,21 @@
       </div>
       <div class="btns"><button class="primary" id="genAnswerBtn">Generate reply</button></div>
     </div>
+    <!-- connection -->
+    <div id="networkView" hidden>
+      <div class="head"><h2>Connection</h2><button class="x" id="closeNet" aria-label="Close">×</button></div>
+      <p class="hint" style="margin-bottom:16px">Direct Line is <b>peer-to-peer only</b> — no server ever relays your audio or messages. STUN below is just address discovery: it helps two peers on different networks find each other and never carries your data.</p>
+      <label style="display:flex;align-items:flex-start;gap:10px;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text);font-size:13px;cursor:pointer;line-height:1.45">
+        <input type="checkbox" id="useStun" checked style="width:auto;cursor:pointer;margin-top:2px">
+        <span><b>Use STUN to connect across networks</b><br><span style="color:var(--muted)">Recommended. Discovers your public address only — still fully peer-to-peer, nothing is relayed. Turn off for same-network or VPN use with zero external servers.</span></span>
+      </label>
+      <div class="field" style="margin-top:16px">
+        <label for="stunList">Your own STUN servers (optional, one per line)</label>
+        <textarea id="stunList" placeholder="stun:stun.l.google.com:19302"></textarea>
+      </div>
+      <div class="btns"><button class="primary" id="saveNet">Apply</button></div>
+      <p class="hint" id="netStatus" style="margin-top:12px">Applies to new connections. Set this before you create or join.</p>
+    </div>
   </div>
 </div>
 
@@ -290,10 +307,23 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const ICE = { iceServers: [
+  // ── Connection: pure peer-to-peer ──────────────────────────────────────
+  // Direct Line makes DIRECT browser-to-browser connections. No server ever
+  // relays your audio or messages. STUN below is only address discovery — it
+  // tells your browser its own public address so two peers on different
+  // networks can find each other, and never carries any of your data, so the
+  // connection stays fully peer-to-peer. Turn STUN off for same-network / VPN
+  // use with zero external servers involved at all.
+  const DEFAULT_STUN = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
-  ]};
+  ];
+  let useStun = true;      // discover public address (still P2P — no relay)
+  let customStun = [];     // optional self-hosted STUN urls
+  function iceConfig(){
+    if (!useStun) return { iceServers: [] };
+    return { iceServers: customStun.length ? customStun.map(u => ({ urls: u })) : DEFAULT_STUN };
+  }
 
   const rid = () => Math.random().toString(36).slice(2, 9);
   let myId = rid(), myName = 'You';
@@ -453,10 +483,18 @@
   function common(p){
     p.pc.onicecandidate = e => { if (e.candidate && p.id) relay({ sub: 'ice', to: p.id, from: myId, candidate: e.candidate }); };
     p.pc.ontrack = e => attachRemoteAudio(p, e.streams[0]);
+    p.pc.oniceconnectionstatechange = () => { if (p.pc.iceConnectionState === 'failed') iceFailed(); };
     p.pc.onconnectionstatechange = () => {
       const s = p.pc.connectionState;
+      if (s === 'failed') iceFailed();
       if ((s === 'failed' || s === 'closed') && p.id) removePeer(p.id);
     };
+  }
+  let warnedIce = false;
+  function iceFailed(){
+    if (warnedIce) return; warnedIce = true;
+    toast('Direct connection failed — networks too strict');
+    if (inRoom) sys('A direct connection failed. These two networks are too strict to link peer-to-peer. Try being on the same Wi-Fi, a phone hotspot, or a shared VPN — that puts you on one network so a direct connection can form.');
   }
   function wire(p){
     const ch = p.channel;
@@ -529,7 +567,7 @@
   function drainIce(p){ if (p.pendingIce){ p.pendingIce.forEach(c => p.pc.addIceCandidate(c).catch(() => {})); p.pendingIce = []; } }
 
   function newAuto(id, name, initiator){
-    const p = { id, name: name || 'Peer', pc: new RTCPeerConnection(ICE), channel: null, pendingIce: [], bootstrap: null };
+    const p = { id, name: name || 'Peer', pc: new RTCPeerConnection(iceConfig()), channel: null, pendingIce: [], bootstrap: null };
     peers.set(id, p); addTracks(p); common(p);
     if (initiator){ p.channel = p.pc.createDataChannel('chat'); wire(p); }
     else p.pc.ondatachannel = e => { p.channel = e.channel; wire(p); };
@@ -544,7 +582,7 @@
 
   // ---------- manual bootstrap (the one code swap) ----------
   async function makeInvite(){
-    const p = { id: null, name: 'Peer', pc: new RTCPeerConnection(ICE), channel: null, pendingIce: [], bootstrap: 'inviter' };
+    const p = { id: null, name: 'Peer', pc: new RTCPeerConnection(iceConfig()), channel: null, pendingIce: [], bootstrap: 'inviter' };
     bootstrap = p; addTracks(p); common(p);
     p.channel = p.pc.createDataChannel('chat'); wire(p);
     $('inviteOut').value = 'generating…';
@@ -564,7 +602,7 @@
   async function makeAnswer(raw){
     let offer; try { offer = decode(raw); } catch { return toast('That code looks incomplete — copy the whole thing'); }
     if (offer.type !== 'offer') return toast('That\u2019s not an invite. Paste the code from someone in the room.');
-    const p = { id: null, name: 'Peer', pc: new RTCPeerConnection(ICE), channel: null, pendingIce: [], bootstrap: 'joiner' };
+    const p = { id: null, name: 'Peer', pc: new RTCPeerConnection(iceConfig()), channel: null, pendingIce: [], bootstrap: 'joiner' };
     bootstrap = p; addTracks(p); common(p);
     p.pc.ondatachannel = e => { p.channel = e.channel; wire(p); };
     try {
@@ -609,6 +647,7 @@
     if (localStream){ try { localStream.getTracks().forEach(t => t.stop()); } catch {} localStream = null; }
     if (stopLocal) stopLocal();
     seen.clear();
+    warnedIce = false;
     inRoom = false; muted = false; myId = rid();
     $('overlay').hidden = true;
     $('composer').classList.remove('on');
@@ -649,9 +688,28 @@
   function clearPeerTyping(){ const el = $('peerTyping'); if (el) el.remove(); }
 
   // ---------- overlay controls ----------
-  function openInvite(){ $('inviteView').hidden = false; $('joinView').hidden = true; $('replyIn').value = ''; $('overlay').hidden = false; makeInvite(); }
-  function openJoin(){ $('joinView').hidden = false; $('inviteView').hidden = true; $('inviteIn').value = ''; $('answerOut').value = ''; $('answerWrap').hidden = true; $('genAnswerBtn').textContent = 'Generate reply'; $('overlay').hidden = false; }
+  function showSheet(view){ ['inviteView', 'joinView', 'networkView'].forEach(v => $(v).hidden = (v !== view)); $('overlay').hidden = false; }
+  function openInvite(){ $('replyIn').value = ''; showSheet('inviteView'); makeInvite(); }
+  function openJoin(){ $('inviteIn').value = ''; $('answerOut').value = ''; $('answerWrap').hidden = true; $('genAnswerBtn').textContent = 'Generate reply'; showSheet('joinView'); }
+  function openNetwork(){ $('useStun').checked = useStun; $('stunList').value = customStun.join('\n'); showSheet('networkView'); }
+  function applyConn(){
+    useStun = $('useStun').checked;
+    const entries = $('stunList').value.split(/\s+/).map(s => s.trim()).filter(Boolean);
+    const stun = entries.filter(u => /^stun:/i.test(u));
+    const dropped = entries.length - stun.length;
+    customStun = stun;
+    let note = useStun
+      ? (customStun.length ? 'Using ' + customStun.length + ' custom STUN server(s). Fully peer-to-peer.' : 'Using default STUN. Fully peer-to-peer — nothing relayed.')
+      : 'STUN off — direct only. Works on the same network or a shared VPN, with zero external servers.';
+    if (dropped) note += ' (' + dropped + ' non-stun entr' + (dropped === 1 ? 'y' : 'ies') + ' ignored — this app stays relay-free.)';
+    $('netStatus').textContent = note;
+    toast('Connection settings applied');
+  }
   $('inviteBtn').onclick = openInvite;
+  $('netBtn').onclick = openNetwork;
+  $('netBtnIdle').onclick = openNetwork;
+  $('closeNet').onclick = () => { $('overlay').hidden = true; };
+  $('saveNet').onclick = applyConn;
   $('leaveBtn').onclick = leaveRoom;
   $('closeInvite').onclick = () => { $('overlay').hidden = true; };
   $('closeJoin').onclick = () => { $('overlay').hidden = true; if (!inRoom){ if (bootstrap){ try { bootstrap.pc.close(); } catch {} bootstrap = null; } } };
