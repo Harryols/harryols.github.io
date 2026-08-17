@@ -210,8 +210,8 @@
   <div class="body" id="body">
     <div class="panel" id="idle">
       <div class="lead">
-        <h1>A direct line — now for the whole group.</h1>
-        <p>Everyone connects straight to everyone else, encrypted, with no server in the middle. Start a room, then invite people one at a time.</p>
+        <h1>A direct line — join a room by name.</h1>
+        <p>Enter the same room name as your friends and you're connected. Only the setup metadata goes through a free signaling service — your audio and messages stay peer-to-peer, browser to browser.</p>
       </div>
       <div class="wire"><span class="end"></span><span class="thread"><b></b></span><span class="end"></span></div>
       <div class="field">
@@ -222,12 +222,17 @@
         <label for="micSelectIdle">Microphone</label>
         <select id="micSelectIdle"></select>
       </div>
-      <div class="btns">
-        <button class="primary" id="createBtn">Create room</button>
-        <button class="ghost" id="joinBtn">Join room</button>
+      <div class="field">
+        <label for="roomInput">Room name</label>
+        <input id="roomInput" maxlength="60" placeholder="e.g. taco-tuesday-9f3x" autocomplete="off">
       </div>
-      <p class="hint" style="text-align:center">To join, you'll swap one code with someone already inside — they connect you to the rest of the room automatically. Everyone needs to be online at the same time.</p>
-      <button class="link" id="netBtnIdle" style="align-self:center">Connection settings (peer-to-peer options)</button>
+      <div class="btns"><button class="primary" id="joinRoomBtn">Join room</button></div>
+      <p class="hint" style="text-align:center">Anyone who enters this exact name joins your call — so pick something hard to guess, like a shared secret. Everyone must be online at the same time.</p>
+      <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-top:2px">
+        <button class="link" id="hostCodeBtn">Host with codes</button>
+        <button class="link" id="joinCodeBtn">Join with codes</button>
+        <button class="link" id="netBtnIdle">Connection</button>
+      </div>
     </div>
   </div>
 
@@ -262,6 +267,7 @@
         <label>Invite code — send this to the person joining</label>
         <div class="code-box"><textarea id="inviteOut" readonly></textarea><button class="copy" data-copy="inviteOut">Copy</button></div>
       </div>
+      <p class="hint" id="inviteCand" style="margin-top:-6px"></p>
       <div class="field">
         <label>Their reply code — paste it here</label>
         <textarea id="replyIn" placeholder="Paste the reply code they send back…"></textarea>
@@ -282,6 +288,7 @@
         <label>Your reply code — send this back to them</label>
         <div class="code-box"><textarea id="answerOut" readonly></textarea><button class="copy" data-copy="answerOut">Copy</button></div>
         <p class="hint"><b>Almost there.</b> When they paste this in, you'll drop into the room and connect to everyone.</p>
+        <p class="hint" id="answerCand" style="margin-top:4px"></p>
       </div>
       <div class="btns"><button class="primary" id="genAnswerBtn">Generate reply</button></div>
     </div>
@@ -297,6 +304,10 @@
         <label for="stunList">Your own STUN servers (optional, one per line)</label>
         <textarea id="stunList" placeholder="stun:stun.l.google.com:19302"></textarea>
       </div>
+      <div class="field" style="margin-top:14px">
+        <label for="brokerUrl">Signaling broker for rooms (metadata only)</label>
+        <input id="brokerUrl" placeholder="wss://broker.emqx.io:8084/mqtt" autocomplete="off">
+      </div>
       <div class="btns"><button class="primary" id="saveNet">Apply</button><button class="ghost" id="testNet">Test connection</button></div>
       <p class="hint" id="netStatus" style="margin-top:12px">Applies to new connections. Set this before you create or join.</p>
     </div>
@@ -309,7 +320,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const VERSION = 'v1.6.1';
+  const VERSION = 'v1.7.0';
   $('ver').textContent = VERSION;
   // ── Connection: pure peer-to-peer ──────────────────────────────────────
   // Direct Line makes DIRECT browser-to-browser connections. No server ever
@@ -329,6 +340,70 @@
   function iceConfig(){
     if (!useStun) return { iceServers: [] };
     return { iceServers: customStun.length ? customStun.map(u => ({ urls: u })) : DEFAULT_STUN };
+  }
+
+  // ── Signaling (metadata only — media stays peer-to-peer) ───────────────
+  // Rooms use a free public MQTT broker purely to exchange WebRTC setup data
+  // (offer/answer/ICE). Your audio and messages NEVER pass through it — once
+  // two browsers are introduced, they talk directly. Swap the broker below or
+  // in the Connection panel for your own if you prefer.
+  const DEFAULT_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+  let mqttClient = null, roomMode = false, room = '';
+  const MQTT_CDNS = [
+    'https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js',
+    'https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js',
+    'https://unpkg.com/mqtt@5/dist/mqtt.min.js'
+  ];
+  function loadMqtt(){
+    return new Promise((res, rej) => {
+      if (window.mqtt) return res(window.mqtt);
+      let i = 0;
+      const next = () => {
+        if (window.mqtt) return res(window.mqtt);
+        if (i >= MQTT_CDNS.length) return rej(new Error('load failed'));
+        const s = document.createElement('script'); s.src = MQTT_CDNS[i++];
+        s.onload = () => window.mqtt ? res(window.mqtt) : next();
+        s.onerror = next;
+        document.head.appendChild(s);
+      };
+      next();
+    });
+  }
+  const roomTopic = () => 'directline/' + encodeURIComponent(room);
+  function pub(obj){ if (mqttClient && roomMode){ obj.from = myId; try { mqttClient.publish(roomTopic(), JSON.stringify(obj)); } catch {} } }
+  function announce(){ pub({ k: 'announce', id: myId, name: myName }); }
+  async function connectSignaling(r){
+    room = r;
+    let lib;
+    try { toast('Connecting to room…'); lib = await loadMqtt(); }
+    catch { toast('Couldn\u2019t load the signaling library — check your connection, or use codes.'); return; }
+    const url = ($('brokerUrl') && $('brokerUrl').value.trim()) || DEFAULT_BROKER;
+    try { mqttClient = lib.connect(url, { clientId: 'dl_' + myId + '_' + rid(), clean: true, reconnectPeriod: 4000, connectTimeout: 9000 }); }
+    catch { toast('Couldn\u2019t reach the signaling broker.'); return; }
+    roomMode = true;
+    let joined = false;
+    mqttClient.on('connect', () => {
+      mqttClient.subscribe(roomTopic(), { qos: 0 }, err => {
+        if (err){ toast('Couldn\u2019t subscribe to the room.'); return; }
+        if (!joined){ joined = true; enterRoom(); sys('Joined room \u201c' + room + '\u201d. Waiting for others to join…'); }
+        announce();
+      });
+    });
+    mqttClient.on('message', (t, payload) => { try { onSignal(JSON.parse(payload.toString())); } catch {} });
+    mqttClient.on('error', () => toast('Signaling connection error'));
+  }
+  function onSignal(m){
+    if (!m || m.from === myId) return;
+    if (m.k === 'announce'){
+      if (!peers.has(m.id)){
+        announce();                                   // let the newcomer (and others) discover us
+        if (myId > m.id) connectTo(m.id, m.name);      // deterministic: higher id makes the offer
+        else setTimeout(() => { const p = peers.get(m.id); if (!p || (p.pc && p.pc.connectionState !== 'connected' && p.pc.connectionState !== 'connecting')) connectTo(m.id, m.name); }, 5000);
+      }
+      return;
+    }
+    if (m.k === 'bye'){ if (m.id) removePeer(m.id); return; }
+    if (m.k === 'sig'){ if (m.to && m.to !== myId) return; handleSignal(m); return; }
   }
 
   const rid = () => Math.random().toString(36).slice(2, 9);
@@ -372,6 +447,12 @@
       pc.addEventListener('icecandidate', onCand);
       cap = setTimeout(finish, 10000);                        // absolute cap so we never hang
     });
+  }
+  function candInfo(sdp){ return new Set([...(sdp || '').matchAll(/typ (\w+)/g)].map(m => m[1])); }
+  function candNote(set){
+    if (set.has('srflx') || set.has('relay')) return '\u2713 Includes a public address (srflx) — this can connect across different networks.';
+    if (set.has('host')) return '\u26a0 Local addresses only — STUN returned no public address, so this code only works on the same network or a shared VPN. Check STUN is on under Connection.';
+    return '\u26a0 No network candidates found — are you online?';
   }
   function toast(m){ const t = $('toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1700); }
   function hueOf(s){ let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
@@ -554,6 +635,7 @@
 
   // ---------- relayed signaling (flood with dedup) ----------
   function relay(msg){
+    if (roomMode){ msg.k = 'sig'; pub(msg); return; }
     if (!msg.mid){ msg.mid = myId + ':' + (++seq); }
     seen.add(msg.mid);
     const t = peers.get(msg.to);
@@ -570,6 +652,13 @@
   async function handleSignal(msg){
     if (msg.sub === 'offer'){
       let p = peers.get(msg.from) || newAuto(msg.from, msg.name, false);
+      if (msg.name) p.name = msg.name;
+      const polite = myId < msg.from;
+      const collision = p.pc.signalingState !== 'stable';
+      if (collision){
+        if (!polite) return;                                   // impolite peer keeps its own offer
+        try { await p.pc.setLocalDescription({ type: 'rollback' }); } catch {}
+      }
       try {
         await p.pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
         drainIce(p);
@@ -612,6 +701,7 @@
     await p.pc.setLocalDescription(offer);
     await waitIce(p.pc);
     $('inviteOut').value = encode(p.pc.localDescription);
+    $('inviteCand').textContent = candNote(candInfo(p.pc.localDescription.sdp));
   }
   async function acceptReply(raw){
     if (!bootstrap) return toast('Generate an invite first');
@@ -635,6 +725,7 @@
     $('answerOut').value = 'generating…';
     await waitIce(p.pc);
     $('answerOut').value = encode(p.pc.localDescription);
+    $('answerCand').textContent = candNote(candInfo(p.pc.localDescription.sdp));
     $('answerWrap').hidden = false;
     $('genAnswerBtn').textContent = 'Regenerate reply';
   }
@@ -645,7 +736,7 @@
     $('idle').hidden = true;
     $('composer').classList.add('on');
     $('roster').classList.add('on');
-    $('inviteBtn').hidden = false; $('leaveBtn').hidden = false;
+    $('inviteBtn').hidden = roomMode; $('leaveBtn').hidden = false;
     $('sendBtn').disabled = false;
     $('input').focus();
     sys('You\u2019re in. People you connect to appear up top.');
@@ -663,6 +754,8 @@
     renderRoster();
   }
   function leaveRoom(){
+    if (mqttClient){ try { pub({ k: 'bye', id: myId }); mqttClient.end(true); } catch {} mqttClient = null; }
+    roomMode = false; room = '';
     peers.forEach(p => { try { p.pc.close(); } catch {} if (p.stopMeter) p.stopMeter(); if (p.audioEl) p.audioEl.remove(); });
     peers.clear();
     if (bootstrap){ try { bootstrap.pc.close(); } catch {} bootstrap = null; }
@@ -780,11 +873,19 @@
   $('sendBtn').onclick = sendMessage;
 
   // ---------- idle panel ----------
+  async function grabMic(){ localStream = await getMic(); if (localStream){ $('micBtn').classList.remove('off'); startLocalMeter(); refreshMics(); } }
   function bindIdle(){
-    $('createBtn').onclick = async () => { myName = $('nick').value.trim() || 'Guest'; localStream = await getMic(); if (localStream){ $('micBtn').classList.remove('off'); startLocalMeter(); refreshMics(); } enterRoom(); openInvite(); };
-    $('joinBtn').onclick = async () => { myName = $('nick').value.trim() || 'Guest'; localStream = await getMic(); if (localStream){ $('micBtn').classList.remove('off'); startLocalMeter(); refreshMics(); } openJoin(); };
+    $('joinRoomBtn').onclick = async () => {
+      const r = $('roomInput').value.trim();
+      if (!r) return toast('Enter a room name');
+      myName = $('nick').value.trim() || 'Guest';
+      await grabMic();
+      connectSignaling(r);
+    };
+    $('hostCodeBtn').onclick = async () => { myName = $('nick').value.trim() || 'Guest'; await grabMic(); enterRoom(); openInvite(); };
+    $('joinCodeBtn').onclick = async () => { myName = $('nick').value.trim() || 'Guest'; await grabMic(); openJoin(); };
     $('micSelectIdle').onchange = e => { selectedMicId = e.target.value || null; };
-    $('nick').addEventListener('keydown', e => { if (e.key === 'Enter') $('createBtn').click(); });
+    $('roomInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('joinRoomBtn').click(); });
     $('nick').focus();
     refreshMics();
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener)
