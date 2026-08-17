@@ -320,7 +320,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const VERSION = 'v1.7.0';
+  const VERSION = 'v1.7.1';
   $('ver').textContent = VERSION;
   // ── Connection: pure peer-to-peer ──────────────────────────────────────
   // Direct Line makes DIRECT browser-to-browser connections. No server ever
@@ -373,13 +373,15 @@
   function pub(obj){ if (mqttClient && roomMode){ obj.from = myId; try { mqttClient.publish(roomTopic(), JSON.stringify(obj)); } catch {} } }
   function announce(){ pub({ k: 'announce', id: myId, name: myName }); }
   async function connectSignaling(r){
+    if (mqttClient) return;
     room = r;
+    $('joinRoomBtn').disabled = true;
     let lib;
     try { toast('Connecting to room…'); lib = await loadMqtt(); }
-    catch { toast('Couldn\u2019t load the signaling library — check your connection, or use codes.'); return; }
+    catch { toast('Couldn\u2019t load the signaling library — check your connection, or use codes.'); $('joinRoomBtn').disabled = false; return; }
     const url = ($('brokerUrl') && $('brokerUrl').value.trim()) || DEFAULT_BROKER;
     try { mqttClient = lib.connect(url, { clientId: 'dl_' + myId + '_' + rid(), clean: true, reconnectPeriod: 4000, connectTimeout: 9000 }); }
-    catch { toast('Couldn\u2019t reach the signaling broker.'); return; }
+    catch { toast('Couldn\u2019t reach the signaling broker.'); $('joinRoomBtn').disabled = false; return; }
     roomMode = true;
     let joined = false;
     mqttClient.on('connect', () => {
@@ -409,7 +411,9 @@
   const rid = () => Math.random().toString(36).slice(2, 9);
   let myId = rid(), myName = 'You';
   let localStream = null, audioCtx = null, muted = false, stopLocal = null, selectedMicId = null;
-  const peers = new Map();            // id -> { id, name, pc, channel, audioEl, stopMeter, pendingIce, bootstrap }
+  const peers = new Map();            // id -> { id, name, pc, channel, audioEl, stopMeter, pendingIce, bootstrap, everOpen }
+  const attempts = new Map();         // id -> connection attempt count (caps retry storms)
+  const gaveUp = new Set();           // ids we've stopped retrying
   const seen = new Set(); let seq = 0;
   let bootstrap = null;               // the in-progress manual (code-swap) peer
   let inRoom = false;
@@ -597,11 +601,12 @@
   function iceFailed(){
     if (warnedIce) return; warnedIce = true;
     toast('Direct connection failed — networks too strict');
-    if (inRoom) sys('A direct connection failed. These two networks are too strict to link peer-to-peer. Try being on the same Wi-Fi, a phone hotspot, or a shared VPN — that puts you on one network so a direct connection can form.');
+    if (inRoom) sys('Direct connection failed — signaling worked, but these two networks won\u2019t allow a direct path (symmetric NAT). The relay-free fix is to share one network: same Wi-Fi, a phone hotspot, or a mesh VPN like Tailscale/ZeroTier (then the call runs directly over your own private network — no media relay).');
   }
   function wire(p){
     const ch = p.channel;
     ch.onopen = () => {
+      p.everOpen = true; attempts.delete(p.id); gaveUp.delete(p.id);
       send(p, { k: 'hello', id: myId, name: myName });
       enterRoom();
       renderRoster();
@@ -686,6 +691,11 @@
   }
   async function connectTo(id, name){
     if (peers.has(id)) return;
+    if (gaveUp.has(id)) return;
+    const n = attempts.get(id) || 0;
+    if (n >= 3){ gaveUp.add(id); sys('Couldn\u2019t reach ' + (name || 'them') + ' — the networks are too strict for a direct link.'); iceFailed(); return; }
+    attempts.set(id, n + 1);
+    if (n === 0) sys('Connecting to ' + (name || 'a peer') + '\u2026');
     const p = newAuto(id, name, true);
     try { const offer = await p.pc.createOffer(); await p.pc.setLocalDescription(offer); relay({ sub: 'offer', to: id, from: myId, name: myName, sdp: offer.sdp }); }
     catch {}
@@ -750,7 +760,7 @@
     if (p.audioEl) p.audioEl.remove();
     peers.delete(id);
     const chip = $('chip-' + id); if (chip) chip.remove();
-    sys((p.name || 'Someone') + ' left.');
+    if (p.everOpen) sys((p.name || 'Someone') + ' left.');
     renderRoster();
   }
   function leaveRoom(){
@@ -758,6 +768,8 @@
     roomMode = false; room = '';
     peers.forEach(p => { try { p.pc.close(); } catch {} if (p.stopMeter) p.stopMeter(); if (p.audioEl) p.audioEl.remove(); });
     peers.clear();
+    attempts.clear(); gaveUp.clear();
+    $('joinRoomBtn').disabled = false;
     if (bootstrap){ try { bootstrap.pc.close(); } catch {} bootstrap = null; }
     if (localStream){ try { localStream.getTracks().forEach(t => t.stop()); } catch {} localStream = null; }
     if (stopLocal) stopLocal();
