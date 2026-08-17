@@ -41,6 +41,8 @@
   .mark i{position:absolute;height:2px;width:9px;background:#0E1117;border-radius:2px}
   .brand{display:flex;flex-direction:column;line-height:1.1;min-width:0}
   .brand b{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:.2px}
+  .ver{font-family:var(--mono);font-size:10px;font-weight:500;color:var(--muted);padding:1px 5px;
+    border:1px solid var(--line);border-radius:6px;margin-left:4px;vertical-align:middle;letter-spacing:0}
   .brand small{color:var(--muted);font-size:11px;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hbtn{background:var(--surface-2);border:1px solid var(--line);color:var(--text);font-size:12.5px;
     font-weight:600;padding:7px 11px;border-radius:10px;cursor:pointer}
@@ -196,7 +198,7 @@
 <div class="app">
   <div class="top">
     <div class="mark"><i></i></div>
-    <div class="brand"><b>Direct Line</b><small>peer-to-peer · no server · encrypted</small></div>
+    <div class="brand"><b>Direct Line <span class="ver" id="ver"></span></b><small>peer-to-peer · no server · encrypted</small></div>
     <button class="hbtn" id="netBtn" title="Connection settings">Connection</button>
     <button class="hbtn" id="inviteBtn" hidden>+ Invite</button>
     <button class="hbtn leave" id="leaveBtn" hidden>Leave</button>
@@ -307,6 +309,8 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
+  const VERSION = 'v1.6.1';
+  $('ver').textContent = VERSION;
   // ── Connection: pure peer-to-peer ──────────────────────────────────────
   // Direct Line makes DIRECT browser-to-browser connections. No server ever
   // relays your audio or messages. STUN below is only address discovery — it
@@ -317,10 +321,7 @@
   const DEFAULT_STUN = [
     { urls: [
       'stun:stun.l.google.com:19302',
-      'stun:stun1.l.google.com:19302',
-      'stun:stun2.l.google.com:19302',
-      'stun:stun3.l.google.com:19302',
-      'stun:stun4.l.google.com:19302'
+      'stun:stun1.l.google.com:19302'
     ] }
   ];
   let useStun = true;      // discover public address (still P2P — no relay)
